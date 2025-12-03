@@ -17,6 +17,7 @@ use heapless::Vec;
 #[cfg(feature = "std")]
 pub struct TapStack<const N: usize = 32, const C: usize = 1024, const F: usize = 512> {
     stack: VirtualStack<N, C, F>,
+    #[allow(dead_code)] // Used in create_tap on Linux, stored for potential future use
     tap_name: String,
 }
 
@@ -42,17 +43,16 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
         // Validate and set name - TAP names have restrictions:
         // - Linux: max 15 characters, typically "tap0", "tap1", etc.
         // - macOS: utun interfaces are auto-named (utun0, utun1, etc.)
-        let name = if self.tap_name.len() > 15 {
-            // Truncate to 15 chars for Linux compatibility
-            self.tap_name[..15].to_string()
-        } else {
-            self.tap_name.clone()
-        };
-        
         // On macOS, utun interfaces are auto-named, so we don't set a name
         // On Linux, we can set a custom name
         #[cfg(target_os = "linux")]
         {
+            let name = if self.tap_name.len() > 15 {
+                // Truncate to 15 chars for Linux compatibility
+                self.tap_name[..15].to_string()
+            } else {
+                self.tap_name.clone()
+            };
             config.name(&name);
         }
         #[cfg(target_os = "macos")]
@@ -244,7 +244,7 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
     
     /// Run the TAP stack, processing packets continuously
     pub fn run(&mut self) -> io::Result<()> {
-        let (mut tap, ifname) = self.create_tap()?;
+        let (tap, ifname) = self.create_tap()?;
         
         println!("\nTAP interface '{}' is ready!", ifname);
         println!("Firewall rules active:");
@@ -273,50 +273,51 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
         loop {
             #[cfg(unix)]
             match tap_reader.read(&mut buf) {
-                Ok(size) => {
-                    if size > 0 && size >= 14 {
-                        // Valid Ethernet frame
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        println!("\n[{}] Received {} bytes from TAP interface", timestamp, size);
-                        
-                        // Parse Ethernet header for display
-                        let dst_mac = &buf[0..6];
-                        let src_mac = &buf[6..12];
-                        let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
-                        println!("  Ethernet: {} -> {} (type: 0x{:04x})",
-                            format_mac(src_mac),
-                            format_mac(dst_mac),
-                            ethertype);
-                        
-                        // Convert to heapless::Vec for firewall processing
-                        let mut packet = Vec::<u8, 1500>::new();
-                        if packet.extend_from_slice(&buf[..size.min(1500)]).is_ok() {
-                            match self.stack.inject_packet(packet) {
-                                Ok(MatchResult::Accept) => {
-                                    println!("  ✓ Packet ACCEPTED by firewall");
-                                    // In a real implementation, we'd forward accepted packets
-                                }
-                                Ok(MatchResult::Drop) => {
-                                    println!("  ✗ Packet DROPPED by firewall");
-                                }
-                                Ok(MatchResult::Reject) => {
-                                    println!("  ✗ Packet REJECTED by firewall");
-                                }
-                                Ok(MatchResult::NoMatch) => {
-                                    println!("  ? Packet NO MATCH (default: DROP)");
-                                }
-                                Err(e) => {
-                                    println!("  Error: {:?}", e);
-                                }
+                Ok(0) => {
+                    // EOF (shouldn't happen with TAP, but handle gracefully)
+                }
+                Ok(size) if size >= 14 => {
+                    // Valid Ethernet frame
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    println!("\n[{}] Received {} bytes from TAP interface", timestamp, size);
+                    
+                    // Parse Ethernet header for display
+                    let dst_mac = &buf[0..6];
+                    let src_mac = &buf[6..12];
+                    let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
+                    println!("  Ethernet: {} -> {} (type: 0x{:04x})",
+                        format_mac(src_mac),
+                        format_mac(dst_mac),
+                        ethertype);
+                    
+                    // Convert to heapless::Vec for firewall processing
+                    let mut packet = Vec::<u8, 1500>::new();
+                    if packet.extend_from_slice(&buf[..size.min(1500)]).is_ok() {
+                        match self.stack.inject_packet(packet) {
+                            Ok(MatchResult::Accept) => {
+                                println!("  ✓ Packet ACCEPTED by firewall");
+                                // In a real implementation, we'd forward accepted packets
+                            }
+                            Ok(MatchResult::Drop) => {
+                                println!("  ✗ Packet DROPPED by firewall");
+                            }
+                            Ok(MatchResult::Reject) => {
+                                println!("  ✗ Packet REJECTED by firewall");
+                            }
+                            Ok(MatchResult::NoMatch) => {
+                                println!("  ? Packet NO MATCH (default: DROP)");
+                            }
+                            Err(e) => {
+                                println!("  Error: {:?}", e);
                             }
                         }
                     }
                 }
-                Ok(0) => {
-                    // EOF (shouldn't happen with TAP)
+                Ok(_) => {
+                    // Packet too short (< 14 bytes), ignore
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // No packet available
@@ -337,6 +338,7 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
     }
     
     /// Get the underlying stack
+    #[allow(dead_code)] // Public API method, may be used by external code
     pub fn get_stack(&mut self) -> &mut VirtualStack<N, C, F> {
         &mut self.stack
     }

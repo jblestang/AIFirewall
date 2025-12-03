@@ -19,13 +19,17 @@ const ETHERNET_HEADER_WITH_VLAN_SIZE: usize = ETHERNET_HEADER_SIZE + VLAN_TAG_SI
 // IP constants
 const IPV4_ETHERTYPE: u16 = 0x0800;
 const IP_HEADER_MIN_SIZE: usize = 20;
+#[allow(dead_code)] // Reserved for future use
 const IP_VERSION_OFFSET: usize = 0;
 const IP_IHL_MASK: u8 = 0x0F;
+#[allow(dead_code)] // Reserved for future use
 const IP_TOTAL_LENGTH_OFFSET: usize = 2;
 const IP_ID_OFFSET: usize = 4;
 const IP_FLAGS_OFFSET: usize = 6;
+#[allow(dead_code)] // Reserved for future use
 const IP_TTL_OFFSET: usize = 8;
 const IP_PROTOCOL_OFFSET: usize = 9;
+#[allow(dead_code)] // Reserved for future use
 const IP_CHECKSUM_OFFSET: usize = 10;
 const IP_SRC_IP_OFFSET: usize = 12;
 const IP_DST_IP_OFFSET: usize = 16;
@@ -33,18 +37,23 @@ const IP_ADDRESS_SIZE: usize = 4;
 
 // IP Fragment flags
 const IP_FLAG_MF: u16 = 0x2000; // More Fragments
+#[allow(dead_code)] // Reserved for future use
 const IP_FLAG_DF: u16 = 0x4000; // Don't Fragment
 const IP_FRAGMENT_OFFSET_MASK: u16 = 0x1FFF; // 13 bits for fragment offset
 
 // Protocol constants
 const PROTOCOL_TCP: u8 = 6;
 const PROTOCOL_UDP: u8 = 17;
+#[allow(dead_code)] // Reserved for future use
 const PROTOCOL_ICMP: u8 = 1;
+#[allow(dead_code)] // Reserved for future use
 const PROTOCOL_IGMP: u8 = 2;
 
 // TCP/UDP constants
 const PORT_SIZE: usize = 2;
+#[allow(dead_code)] // Reserved for future use
 const UDP_HEADER_SIZE: usize = 8;
+#[allow(dead_code)] // Reserved for future use
 const TCP_HEADER_MIN_SIZE: usize = 20;
 const TCP_FLAGS_OFFSET: usize = 13;
 
@@ -59,6 +68,7 @@ const CONNECTION_CLEANUP_INTERVAL: u64 = 1000;
 const CONNECTION_TIMEOUT: u64 = 300;
 
 // Fragment tracking constants
+#[allow(dead_code)] // Used internally but not directly referenced
 const FRAGMENT_CLEANUP_INTERVAL: u64 = 1000;
 const FRAGMENT_TIMEOUT: u64 = 60; // RFC 791: 60 seconds timeout for fragment reassembly
 
@@ -177,16 +187,6 @@ impl Hash for ConnectionId {
 }
 
 impl ConnectionId {
-    fn new(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, protocol: u8) -> Self {
-        Self {
-            src_ip,
-            dst_ip,
-            src_port,
-            dst_port,
-            protocol,
-        }
-    }
-    
     /// Create a normalized connection ID (smaller IP first for bidirectional matching)
     fn normalized(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, protocol: u8) -> Self {
         // For TCP/UDP, normalize by putting smaller IP first

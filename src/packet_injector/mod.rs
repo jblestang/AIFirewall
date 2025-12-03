@@ -11,6 +11,7 @@ impl<const N: usize, const C: usize, const F: usize> PacketInjector<N, C, F> {
         Self { stack }
     }
     
+    #[allow(dead_code)] // Public API method, may be used by external code
     pub fn get_stack(&mut self) -> &mut VirtualStack<N, C, F> {
         &mut self.stack
     }

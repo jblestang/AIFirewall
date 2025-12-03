@@ -2,6 +2,19 @@
 //!
 //! This module contains formal proofs and verification of key properties
 //! of the firewall rule matching system.
+//!
+//! # Kani Verification
+//!
+//! This module includes Kani model checking proofs for core properties.
+//! To run Kani verification:
+//!
+//! ```bash
+//! cargo install kani-verifier
+//! cargo kani --features proofs
+//! ```
+//!
+//! Note: Kani has limitations with `no_std` and complex types, so some proofs
+//! use runtime verification instead.
 
 use crate::firewall::{Firewall, FirewallRule, Action, Layer2Match, Layer3Match, Layer4Match, IpMatch, MatchResult};
 use crate::parser::ParseError;
@@ -581,15 +594,7 @@ pub fn _theorem_6_termination() {
 ///
 /// **Q.E.D.**
 ///
-/// **Kani Verification** (requires Kani to be installed separately):
-/// ```rust
-/// #[kani::proof]
-/// pub fn property_exact_ip_reflexivity() {
-///     let ip = kani::any::<[u8; 4]>();
-///     let ip_match = IpMatch { addr: ip, cidr: None };
-///     assert!(ip_match.matches(ip));
-/// }
-/// ```
+/// **Kani Verification**: See `kani_proofs` module below for actual Kani proofs.
 ///
 /// This property is verified through property-based testing in `tests/property_tests.rs`.
 ///
@@ -1235,5 +1240,224 @@ pub fn _invariant_rule_ordering<const N: usize, const C: usize, const F: usize>(
     // Rules are stored in a Vec, which preserves insertion order
     // This is a structural property of the data structure
     true
+}
+
+/// Kani Model Checking Proofs
+///
+/// This module contains Kani proofs for core properties that can be verified
+/// using model checking. Kani is a Rust model checker that performs formal
+/// verification by exhaustively checking all possible inputs.
+///
+/// # Installation
+///
+/// ```bash
+/// cargo install kani-verifier
+/// ```
+///
+/// # Running Kani Proofs
+///
+/// ```bash
+/// # Run all Kani proofs
+/// cargo kani --features proofs
+///
+/// # Run a specific proof
+/// cargo kani --features proofs --harness kani_property_exact_ip_reflexivity
+/// ```
+///
+/// # Limitations
+///
+/// Kani has some limitations with `no_std` environments and complex types.
+/// These proofs focus on pure functions that can be verified independently.
+///
+/// Note: The `#[cfg(kani)]` attribute is automatically set by the Kani tool
+/// when processing proofs. These functions are only compiled when running `cargo kani`.
+#[cfg(kani)]
+pub mod kani_proofs {
+    use super::*;
+    
+    /// Kani Proof: Property 1 - Exact IP Matching Reflexivity
+    ///
+    /// **Property**: For any IP address ip, an IpMatch with addr=ip and cidr=None
+    /// matches ip itself.
+    ///
+    /// **Formal Statement**: ∀ip ∈ [u8; 4]: matches(IpMatch { addr: ip, cidr: None }, ip) = true
+    #[kani::proof]
+    pub fn kani_property_exact_ip_reflexivity() {
+        let ip = kani::any::<[u8; 4]>();
+        let ip_match = IpMatch { addr: ip, cidr: None };
+        assert!(ip_match.matches(ip), "Exact IP matching must be reflexive");
+    }
+    
+    /// Kani Proof: Property 2 - CIDR Subnet Inclusion (Part 1)
+    ///
+    /// **Property**: If an IP is in a CIDR subnet, then IpMatch for that subnet matches it.
+    ///
+    /// **Formal Statement**: 
+    /// For CIDR subnet with prefix length n (0 ≤ n ≤ 32) and network address net:
+    /// ∀ip: ((ip & mask(n)) == (net & mask(n))) → matches(IpMatch { addr: net, cidr: Some(n) }, ip)
+    #[kani::proof]
+    #[kani::unwind(33)] // CIDR can be 0-32
+    pub fn kani_property_cidr_subnet_inclusion() {
+        let net = kani::any::<[u8; 4]>();
+        let cidr = kani::any::<u8>();
+        
+        // Constrain CIDR to valid range [0, 32]
+        kani::assume(cidr <= 32);
+        
+        let ip_match = IpMatch { addr: net, cidr: Some(cidr) };
+        
+        // Generate an IP that should be in the same subnet
+        let ip = kani::any::<[u8; 4]>();
+        
+        // Calculate subnet mask
+        let mask = if cidr == 0 {
+            0u32
+        } else if cidr == 32 {
+            0xFFFFFFFFu32
+        } else {
+            !((1u32 << (32 - cidr)) - 1)
+        };
+        
+        let net_u32 = u32::from_be_bytes(net);
+        let ip_u32 = u32::from_be_bytes(ip);
+        
+        // Assume IP is in the same subnet
+        kani::assume((ip_u32 & mask) == (net_u32 & mask));
+        
+        // Verify: IP should match
+        assert!(ip_match.matches(ip), "IP in subnet must match CIDR rule");
+    }
+    
+    /// Kani Proof: Property 4 - CIDR Matching Correctness
+    ///
+    /// **Property**: CIDR /0 matches all IPs, CIDR /32 matches only exact IP.
+    ///
+    /// **Formal Statement**:
+    /// - matches(IpMatch { addr: _, cidr: Some(0) }, ip) = true for all ip
+    /// - matches(IpMatch { addr: ip, cidr: Some(32) }, ip') = true iff ip == ip'
+    #[kani::proof]
+    pub fn kani_property_cidr_edge_cases() {
+        // Test CIDR /0 (matches all)
+        let any_net = kani::any::<[u8; 4]>();
+        let any_ip = kani::any::<[u8; 4]>();
+        let ip_match_all = IpMatch { addr: any_net, cidr: Some(0) };
+        assert!(ip_match_all.matches(any_ip), "CIDR /0 must match all IPs");
+        
+        // Test CIDR /32 (exact match only)
+        let exact_ip = kani::any::<[u8; 4]>();
+        let test_ip = kani::any::<[u8; 4]>();
+        let ip_match_exact = IpMatch { addr: exact_ip, cidr: Some(32) };
+        
+        if exact_ip == test_ip {
+            assert!(ip_match_exact.matches(test_ip), "CIDR /32 must match exact IP");
+        } else {
+            assert!(!ip_match_exact.matches(test_ip), "CIDR /32 must not match different IP");
+        }
+    }
+    
+    /// Kani Proof: Property 4 - CIDR Invalid Range Handling
+    ///
+    /// **Property**: CIDR values > 32 should not match any IP.
+    ///
+    /// **Formal Statement**: ∀ip, net, cidr > 32: ¬matches(IpMatch { addr: net, cidr: Some(cidr) }, ip)
+    #[kani::proof]
+    pub fn kani_property_cidr_invalid_range() {
+        let net = kani::any::<[u8; 4]>();
+        let cidr = kani::any::<u8>();
+        let ip = kani::any::<[u8; 4]>();
+        
+        // Constrain CIDR to invalid range (> 32)
+        kani::assume(cidr > 32);
+        
+        let ip_match = IpMatch { addr: net, cidr: Some(cidr) };
+        
+        // Invalid CIDR should not match
+        assert!(!ip_match.matches(ip), "Invalid CIDR (>32) must not match any IP");
+    }
+    
+    /// Kani Proof: CIDR Mask Calculation Correctness
+    ///
+    /// **Property**: The CIDR mask calculation is correct for all valid prefix lengths.
+    ///
+    /// **Formal Statement**: For n ∈ [1, 31]:
+    /// mask(n) = !((1 << (32 - n)) - 1) has exactly n leading 1s and (32-n) trailing 0s
+    #[kani::proof]
+    #[kani::unwind(33)]
+    pub fn kani_property_cidr_mask_calculation() {
+        let cidr = kani::any::<u8>();
+        kani::assume(cidr >= 1 && cidr <= 31);
+        
+        let mask = !((1u32 << (32 - cidr)) - 1);
+        
+        // Verify mask has correct number of leading 1s
+        // For CIDR n, mask should have n leading 1s
+        let expected_ones = (1u32 << cidr) - 1;
+        let leading_ones = mask >> (32 - cidr);
+        
+        assert_eq!(leading_ones, expected_ones, "CIDR mask must have correct number of leading 1s");
+        
+        // Verify trailing zeros
+        let trailing_mask = (1u32 << (32 - cidr)) - 1;
+        assert_eq!(mask & trailing_mask, 0, "CIDR mask must have trailing zeros");
+    }
+    
+    /// Kani Proof: Property 3 - Rule Matching Consistency (Simplified)
+    ///
+    /// **Property**: IpMatch::matches is a pure function - same inputs produce same outputs.
+    ///
+    /// **Formal Statement**: ∀ip_match, ip: matches(ip_match, ip) = matches(ip_match, ip)
+    ///
+    /// This is trivially true for pure functions, but Kani can verify there are no
+    /// hidden state dependencies.
+    #[kani::proof]
+    pub fn kani_property_ip_match_consistency() {
+        let ip_match = IpMatch {
+            addr: kani::any::<[u8; 4]>(),
+            cidr: kani::any::<Option<u8>>(),
+        };
+        let ip = kani::any::<[u8; 4]>();
+        
+        // Call matches twice with same inputs
+        let result1 = ip_match.matches(ip);
+        let result2 = ip_match.matches(ip);
+        
+        // Results must be identical (pure function property)
+        assert_eq!(result1, result2, "IpMatch::matches must be consistent (pure function)");
+    }
+    
+    /// Kani Proof: No Panic in IpMatch::matches
+    ///
+    /// **Property**: IpMatch::matches never panics for any valid inputs.
+    ///
+    /// Kani will verify that the function completes without panicking for all
+    /// possible input combinations.
+    #[kani::proof]
+    #[kani::unwind(33)]
+    pub fn kani_property_ip_match_no_panic() {
+        let ip_match = IpMatch {
+            addr: kani::any::<[u8; 4]>(),
+            cidr: kani::any::<Option<u8>>(),
+        };
+        let ip = kani::any::<[u8; 4]>();
+        
+        // This should never panic
+        let _result = ip_match.matches(ip);
+    }
+}
+
+/// Non-Kani fallback: Runtime verification when Kani is not available
+///
+/// When not running Kani, this module is empty. Kani proofs are only compiled
+/// when running `cargo kani`, which automatically sets the `kani` cfg flag.
+#[cfg(not(kani))]
+pub mod kani_proofs {
+    // Kani proofs are only available when running the Kani tool.
+    // Install Kani and run proofs to use formal verification.
+    //
+    // To use Kani:
+    // 1. Install Kani: cargo install kani-verifier
+    // 2. Run proofs: cargo kani --features proofs
+    //
+    // The `#[cfg(kani)]` attribute is automatically set by Kani when processing.
 }
 

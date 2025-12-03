@@ -17,7 +17,6 @@
 //! use runtime verification instead.
 
 use crate::firewall::{Firewall, FirewallRule, Action, Layer2Match, Layer3Match, Layer4Match, IpMatch, MatchResult};
-use crate::parser::ParseError;
 use heapless::Vec;
 
 /// Theorem 1: Soundness of Rule Matching
@@ -1754,23 +1753,90 @@ pub mod kani_proofs {
     pub fn kani_property_formal_semantics_no_panic() {
         use super::semantics;
         
-        // Test L2 matching
-        let l2_match = kani::any::<Layer2Match>();
+        // Test L2 matching - construct Layer2Match manually
+        let use_any = kani::any::<bool>();
+        let l2_match = if use_any {
+            Layer2Match::Any
+        } else {
+            Layer2Match::Match {
+                src_mac: kani::any::<Option<[u8; 6]>>(),
+                dst_mac: kani::any::<Option<[u8; 6]>>(),
+                ethertype: kani::any::<Option<u16>>(),
+                vlan_id: {
+                    let has_vlan = kani::any::<bool>();
+                    if has_vlan {
+                        let vid = kani::any::<u16>();
+                        kani::assume(vid <= 0x0FFF); // Valid VLAN ID range
+                        Some(vid)
+                    } else {
+                        None
+                    }
+                },
+            }
+        };
         let src_mac = kani::any::<[u8; 6]>();
         let dst_mac = kani::any::<[u8; 6]>();
         let ethertype = kani::any::<u16>();
-        let vlan_id = kani::any::<Option<u16>>();
+        let vlan_id = {
+            let has_vlan = kani::any::<bool>();
+            if has_vlan {
+                let vid = kani::any::<u16>();
+                kani::assume(vid <= 0x0FFF); // Valid VLAN ID range
+                Some(vid)
+            } else {
+                None
+            }
+        };
         let _ = semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, vlan_id);
         
-        // Test L3 matching
-        let l3_match = kani::any::<Layer3Match>();
+        // Test L3 matching - construct Layer3Match manually
+        let use_any = kani::any::<bool>();
+        let l3_match = if use_any {
+            Layer3Match::Any
+        } else {
+            Layer3Match::Match {
+                src_ip: {
+                    let has_src = kani::any::<bool>();
+                    if has_src {
+                        Some(IpMatch {
+                            addr: kani::any::<[u8; 4]>(),
+                            cidr: kani::any::<Option<u8>>(),
+                        })
+                    } else {
+                        None
+                    }
+                },
+                dst_ip: {
+                    let has_dst = kani::any::<bool>();
+                    if has_dst {
+                        Some(IpMatch {
+                            addr: kani::any::<[u8; 4]>(),
+                            cidr: kani::any::<Option<u8>>(),
+                        })
+                    } else {
+                        None
+                    }
+                },
+                protocol: kani::any::<Option<u8>>(),
+            }
+        };
         let src_ip = kani::any::<Option<[u8; 4]>>();
         let dst_ip = kani::any::<Option<[u8; 4]>>();
         let protocol = kani::any::<Option<u8>>();
         let _ = semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, protocol);
         
-        // Test L4 matching
-        let l4_match = kani::any::<Layer4Match>();
+        // Test L4 matching - construct Layer4Match manually
+        let use_any = kani::any::<bool>();
+        let l4_match = if use_any {
+            Layer4Match::Any
+        } else {
+            Layer4Match::Match {
+                protocol: kani::any::<u8>(),
+                src_port: kani::any::<Option<u16>>(),
+                dst_port: kani::any::<Option<u16>>(),
+                one_way: kani::any::<bool>(),
+            }
+        };
         let src_port = kani::any::<Option<u16>>();
         let dst_port = kani::any::<Option<u16>>();
         let _ = semantics::matches_l4_formal(&l4_match, protocol, src_port, dst_port, src_ip, dst_ip, &l3_match);

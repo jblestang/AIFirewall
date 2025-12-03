@@ -1,0 +1,33 @@
+[package]
+name = "aifirewall"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[[bin]]
+name = "aifirewall"
+path = "src/main.rs"
+required-features = ["std"]
+
+[[bench]]
+name = "firewall_performance"
+harness = false
+
+[dependencies]
+smoltcp = { version = "0.10", default-features = false, features = ["proto-ipv4"] }
+pest = { version = "2.7", default-features = false }
+pest_derive = { version = "2.7", default-features = false }
+heapless = "0.7"
+hash32 = "0.2"
+tun = "0.6"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = ["std"]
+std = []
+proofs = []
+

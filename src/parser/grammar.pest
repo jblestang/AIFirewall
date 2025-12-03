@@ -1,0 +1,87 @@
+// Firewall rule grammar for formal parsing
+// Supports L2 (Ethernet), L3 (IP), and L4 (TCP/UDP/ICMP) filtering
+
+rule = { SOI ~ rule_line ~ EOI }
+
+rule_line = { 
+    action ~ whitespace ~ 
+    (l2_match | l3_match | l4_match | combined_match) ~ 
+    comment?
+}
+
+action = { "ACCEPT" | "DROP" | "REJECT" }
+
+l2_match = { 
+    "ether" ~ whitespace ~ 
+    (src_mac | dst_mac | ethertype | vlan_id | l2_all)
+}
+
+l3_match = { 
+    "ip" ~ whitespace ~ 
+    (src_ip | dst_ip | protocol | l3_all)
+}
+
+l4_match = { 
+    ("tcp" | "udp" | "icmp") ~ whitespace ~ 
+    (src_port | dst_port | one_way | l4_all)*
+}
+
+combined_match = { 
+    l2_match ~ whitespace ~ l3_match ~ whitespace ~ l4_match? |
+    l2_match ~ whitespace ~ l3_match |
+    l2_match ~ whitespace ~ l4_match |
+    l3_match ~ whitespace ~ l4_match
+}
+
+src_mac = { "src" ~ whitespace ~ "mac" ~ whitespace ~ mac_address }
+dst_mac = { "dst" ~ whitespace ~ "mac" ~ whitespace ~ mac_address }
+ethertype = { "type" ~ whitespace ~ hex_number }
+vlan_id = { "vlan" ~ whitespace ~ vlan_number }
+vlan_number = { number | "*" }
+l2_all = { "*" }
+
+src_ip = { "src" ~ whitespace ~ "ip" ~ whitespace ~ ip_address }
+dst_ip = { "dst" ~ whitespace ~ "ip" ~ whitespace ~ ip_address }
+protocol = { "proto" ~ whitespace ~ (protocol_name | number) }
+l3_all = { "*" }
+
+src_port = { "src" ~ whitespace ~ "port" ~ whitespace ~ port_number }
+dst_port = { "dst" ~ whitespace ~ "port" ~ whitespace ~ port_number }
+one_way = { "oneway" | "one-way" }
+l4_all = { "*" }
+
+mac_address = { 
+    hex_byte ~ ":" ~ hex_byte ~ ":" ~ hex_byte ~ ":" ~ 
+    hex_byte ~ ":" ~ hex_byte ~ ":" ~ hex_byte |
+    "*"
+}
+
+ip_address = { 
+    ipv4_address | 
+    ipv4_cidr | 
+    "*"
+}
+
+ipv4_address = { 
+    number ~ "." ~ number ~ "." ~ number ~ "." ~ number
+}
+
+ipv4_cidr = { 
+    ipv4_address ~ "/" ~ number
+}
+
+port_number = { number | "*" }
+
+protocol_name = { 
+    "tcp" | "udp" | "icmp" | "igmp" | "icmpv6" | "ipv6" | "ip"
+}
+
+number = { ASCII_DIGIT+ }
+hex_number = { "0x" ~ ASCII_HEX_DIGIT+ }
+hex_byte = { ASCII_HEX_DIGIT{2} }
+
+comment = { "#" ~ (!NEWLINE ~ ANY)* }
+
+whitespace = { (" " | "\t")+ }
+NEWLINE = { "\r\n" | "\n" }
+

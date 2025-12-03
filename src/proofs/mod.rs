@@ -1443,6 +1443,338 @@ pub mod kani_proofs {
         // This should never panic
         let _result = ip_match.matches(ip);
     }
+    
+    /// Kani Proof: L2 Matching - MAC Address Correctness
+    ///
+    /// **Property**: If a rule specifies a MAC address, it only matches packets with that MAC.
+    ///
+    /// **Formal Statement**: 
+    /// ∀l2_match, src_mac, dst_mac: 
+    ///   (l2_match.src_mac = Some(m) ∧ src_mac ≠ m) → ¬matches_l2_formal(l2_match, src_mac, dst_mac, _, _)
+    #[kani::proof]
+    pub fn kani_property_l2_mac_matching() {
+        use super::semantics;
+        
+        let rule_mac = kani::any::<[u8; 6]>();
+        let packet_mac = kani::any::<[u8; 6]>();
+        let other_mac = kani::any::<[u8; 6]>();
+        let ethertype = kani::any::<u16>();
+        let vlan_id = kani::any::<Option<u16>>();
+        
+        // Create rule that requires specific src_mac
+        let l2_match = Layer2Match::Match {
+            src_mac: Some(rule_mac),
+            dst_mac: None,
+            ethertype: None,
+            vlan_id: None,
+        };
+        
+        // If packet MAC matches rule MAC, it should match
+        if packet_mac == rule_mac {
+            assert!(semantics::matches_l2_formal(&l2_match, &packet_mac, &other_mac, ethertype, vlan_id),
+                   "L2 matching: Packet with matching MAC must match rule");
+        } else {
+            // If packet MAC doesn't match, it should not match
+            assert!(!semantics::matches_l2_formal(&l2_match, &packet_mac, &other_mac, ethertype, vlan_id),
+                   "L2 matching: Packet with different MAC must not match rule");
+        }
+    }
+    
+    /// Kani Proof: L2 Matching - Ethertype Correctness
+    ///
+    /// **Property**: If a rule specifies an ethertype, it only matches packets with that ethertype.
+    ///
+    /// **Formal Statement**:
+    /// ∀l2_match, ethertype: 
+    ///   (l2_match.ethertype = Some(e) ∧ packet_ethertype ≠ e) → ¬matches_l2_formal(l2_match, _, _, ethertype, _)
+    #[kani::proof]
+    pub fn kani_property_l2_ethertype_matching() {
+        use super::semantics;
+        
+        let rule_ethertype = kani::any::<u16>();
+        let packet_ethertype = kani::any::<u16>();
+        let src_mac = kani::any::<[u8; 6]>();
+        let dst_mac = kani::any::<[u8; 6]>();
+        let vlan_id = kani::any::<Option<u16>>();
+        
+        // Create rule that requires specific ethertype
+        let l2_match = Layer2Match::Match {
+            src_mac: None,
+            dst_mac: None,
+            ethertype: Some(rule_ethertype),
+            vlan_id: None,
+        };
+        
+        // If packet ethertype matches rule ethertype, it should match
+        if packet_ethertype == rule_ethertype {
+            assert!(semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, packet_ethertype, vlan_id),
+                   "L2 matching: Packet with matching ethertype must match rule");
+        } else {
+            // If packet ethertype doesn't match, it should not match
+            assert!(!semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, packet_ethertype, vlan_id),
+                   "L2 matching: Packet with different ethertype must not match rule");
+        }
+    }
+    
+    /// Kani Proof: L2 Matching - VLAN ID Correctness
+    ///
+    /// **Property**: If a rule specifies a VLAN ID, it only matches packets with that VLAN ID.
+    ///
+    /// **Formal Statement**:
+    /// ∀l2_match, vlan_id: 
+    ///   (l2_match.vlan_id = Some(vid) ∧ (packet_vlan ≠ Some(vid) ∨ packet_vlan = None)) 
+    ///   → ¬matches_l2_formal(l2_match, _, _, _, packet_vlan)
+    #[kani::proof]
+    pub fn kani_property_l2_vlan_matching() {
+        use super::semantics;
+        
+        let rule_vlan = kani::any::<u16>();
+        let packet_vlan = kani::any::<Option<u16>>();
+        let src_mac = kani::any::<[u8; 6]>();
+        let dst_mac = kani::any::<[u8; 6]>();
+        let ethertype = kani::any::<u16>();
+        
+        // Constrain VLAN ID to valid range (0-4095)
+        kani::assume(rule_vlan <= 0x0FFF);
+        if let Some(vid) = packet_vlan {
+            kani::assume(vid <= 0x0FFF);
+        }
+        
+        // Create rule that requires specific VLAN ID
+        let l2_match = Layer2Match::Match {
+            src_mac: None,
+            dst_mac: None,
+            ethertype: None,
+            vlan_id: Some(rule_vlan),
+        };
+        
+        // If packet VLAN matches rule VLAN, it should match
+        if packet_vlan == Some(rule_vlan) {
+            assert!(semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, packet_vlan),
+                   "L2 matching: Packet with matching VLAN ID must match rule");
+        } else {
+            // If packet VLAN doesn't match or is None, it should not match
+            assert!(!semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, packet_vlan),
+                   "L2 matching: Packet with different/missing VLAN ID must not match rule");
+        }
+    }
+    
+    /// Kani Proof: L2 Matching - Any Matches All
+    ///
+    /// **Property**: Layer2Match::Any matches all packets regardless of their L2 fields.
+    ///
+    /// **Formal Statement**: ∀src_mac, dst_mac, ethertype, vlan_id: matches_l2_formal(Any, src_mac, dst_mac, ethertype, vlan_id) = true
+    #[kani::proof]
+    pub fn kani_property_l2_any_matches_all() {
+        use super::semantics;
+        
+        let src_mac = kani::any::<[u8; 6]>();
+        let dst_mac = kani::any::<[u8; 6]>();
+        let ethertype = kani::any::<u16>();
+        let vlan_id = kani::any::<Option<u16>>();
+        
+        // Constrain VLAN ID to valid range if present
+        if let Some(vid) = vlan_id {
+            kani::assume(vid <= 0x0FFF);
+        }
+        
+        let l2_match = Layer2Match::Any;
+        
+        // Any should match all packets
+        assert!(semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, vlan_id),
+               "L2 matching: Any must match all packets");
+    }
+    
+    /// Kani Proof: L3 Matching - Protocol Correctness
+    ///
+    /// **Property**: If a rule specifies a protocol, it only matches packets with that protocol.
+    ///
+    /// **Formal Statement**:
+    /// ∀l3_match, protocol: 
+    ///   (l3_match.protocol = Some(p) ∧ packet_protocol ≠ Some(p)) → ¬matches_l3_formal(l3_match, _, _, protocol)
+    #[kani::proof]
+    pub fn kani_property_l3_protocol_matching() {
+        use super::semantics;
+        
+        let rule_protocol = kani::any::<u8>();
+        let packet_protocol = kani::any::<Option<u8>>();
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        
+        // Create rule that requires specific protocol
+        let l3_match = Layer3Match::Match {
+            src_ip: None,
+            dst_ip: None,
+            protocol: Some(rule_protocol),
+        };
+        
+        // If packet protocol matches rule protocol, it should match
+        if packet_protocol == Some(rule_protocol) {
+            assert!(semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, packet_protocol),
+                   "L3 matching: Packet with matching protocol must match rule");
+        } else {
+            // If packet protocol doesn't match, it should not match
+            assert!(!semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, packet_protocol),
+                   "L3 matching: Packet with different protocol must not match rule");
+        }
+    }
+    
+    /// Kani Proof: L3 Matching - Any Matches All
+    ///
+    /// **Property**: Layer3Match::Any matches all packets regardless of their L3 fields.
+    ///
+    /// **Formal Statement**: ∀src_ip, dst_ip, protocol: matches_l3_formal(Any, src_ip, dst_ip, protocol) = true
+    #[kani::proof]
+    pub fn kani_property_l3_any_matches_all() {
+        use super::semantics;
+        
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        let protocol = kani::any::<Option<u8>>();
+        
+        let l3_match = Layer3Match::Any;
+        
+        // Any should match all packets
+        assert!(semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, protocol),
+               "L3 matching: Any must match all packets");
+    }
+    
+    /// Kani Proof: L4 Matching - Port Correctness
+    ///
+    /// **Property**: If a rule specifies a port, it only matches packets with that port.
+    ///
+    /// **Formal Statement**:
+    /// ∀l4_match, port: 
+    ///   (l4_match.src_port = Some(sp) ∧ packet_src_port ≠ Some(sp)) → ¬matches_l4_formal(l4_match, _, src_port, _, _, _, _)
+    #[kani::proof]
+    pub fn kani_property_l4_port_matching() {
+        use super::semantics;
+        
+        let rule_src_port = kani::any::<u16>();
+        let packet_src_port = kani::any::<Option<u16>>();
+        let rule_dst_port = kani::any::<Option<u16>>();
+        let packet_dst_port = kani::any::<Option<u16>>();
+        let protocol = kani::any::<Option<u8>>();
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        
+        // Create rule that requires specific src_port
+        let l3_match = Layer3Match::Any;
+        let l4_match = Layer4Match::Match {
+            protocol: protocol.unwrap_or(6), // Use protocol if available, else TCP
+            src_port: Some(rule_src_port),
+            dst_port: rule_dst_port,
+            one_way: false,
+        };
+        
+        // If packet src_port matches rule src_port, it should match (assuming protocol matches)
+        if packet_src_port == Some(rule_src_port) && protocol.is_some() {
+            // Also need to check dst_port if rule specifies it
+            let dst_port_ok = rule_dst_port.is_none() || packet_dst_port == rule_dst_port;
+            if dst_port_ok {
+                assert!(semantics::matches_l4_formal(&l4_match, protocol, packet_src_port, packet_dst_port, src_ip, dst_ip, &l3_match),
+                       "L4 matching: Packet with matching ports must match rule");
+            }
+        } else if packet_src_port != Some(rule_src_port) {
+            // If packet src_port doesn't match, it should not match
+            assert!(!semantics::matches_l4_formal(&l4_match, protocol, packet_src_port, packet_dst_port, src_ip, dst_ip, &l3_match),
+                   "L4 matching: Packet with different src_port must not match rule");
+        }
+    }
+    
+    /// Kani Proof: L4 Matching - Any Matches All
+    ///
+    /// **Property**: Layer4Match::Any matches all packets regardless of their L4 fields.
+    ///
+    /// **Formal Statement**: ∀protocol, src_port, dst_port: matches_l4_formal(Any, protocol, src_port, dst_port, _, _, _) = true
+    #[kani::proof]
+    pub fn kani_property_l4_any_matches_all() {
+        use super::semantics;
+        
+        let protocol = kani::any::<Option<u8>>();
+        let src_port = kani::any::<Option<u16>>();
+        let dst_port = kani::any::<Option<u16>>();
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        let l3_match = Layer3Match::Any;
+        
+        let l4_match = Layer4Match::Any;
+        
+        // Any should match all packets
+        assert!(semantics::matches_l4_formal(&l4_match, protocol, src_port, dst_port, src_ip, dst_ip, &l3_match),
+               "L4 matching: Any must match all packets");
+    }
+    
+    /// Kani Proof: Formal Semantics Consistency
+    ///
+    /// **Property**: Formal semantics functions are pure (same inputs → same outputs).
+    ///
+    /// **Formal Statement**: 
+    /// ∀f ∈ {matches_l2_formal, matches_l3_formal, matches_l4_formal}: 
+    ///   f(x) = f(x) for all x
+    #[kani::proof]
+    pub fn kani_property_formal_semantics_consistency() {
+        use super::semantics;
+        
+        // Test L2 matching consistency
+        let l2_match = Layer2Match::Any;
+        let src_mac = kani::any::<[u8; 6]>();
+        let dst_mac = kani::any::<[u8; 6]>();
+        let ethertype = kani::any::<u16>();
+        let vlan_id = kani::any::<Option<u16>>();
+        
+        let result1 = semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, vlan_id);
+        let result2 = semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, vlan_id);
+        assert_eq!(result1, result2, "L2 formal semantics must be consistent");
+        
+        // Test L3 matching consistency
+        let l3_match = Layer3Match::Any;
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        let protocol = kani::any::<Option<u8>>();
+        
+        let result1 = semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, protocol);
+        let result2 = semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, protocol);
+        assert_eq!(result1, result2, "L3 formal semantics must be consistent");
+        
+        // Test L4 matching consistency
+        let l4_match = Layer4Match::Any;
+        let src_port = kani::any::<Option<u16>>();
+        let dst_port = kani::any::<Option<u16>>();
+        
+        let result1 = semantics::matches_l4_formal(&l4_match, protocol, src_port, dst_port, src_ip, dst_ip, &l3_match);
+        let result2 = semantics::matches_l4_formal(&l4_match, protocol, src_port, dst_port, src_ip, dst_ip, &l3_match);
+        assert_eq!(result1, result2, "L4 formal semantics must be consistent");
+    }
+    
+    /// Kani Proof: No Panic in Formal Semantics Functions
+    ///
+    /// **Property**: Formal semantics functions never panic for any valid inputs.
+    #[kani::proof]
+    pub fn kani_property_formal_semantics_no_panic() {
+        use super::semantics;
+        
+        // Test L2 matching
+        let l2_match = kani::any::<Layer2Match>();
+        let src_mac = kani::any::<[u8; 6]>();
+        let dst_mac = kani::any::<[u8; 6]>();
+        let ethertype = kani::any::<u16>();
+        let vlan_id = kani::any::<Option<u16>>();
+        let _ = semantics::matches_l2_formal(&l2_match, &src_mac, &dst_mac, ethertype, vlan_id);
+        
+        // Test L3 matching
+        let l3_match = kani::any::<Layer3Match>();
+        let src_ip = kani::any::<Option<[u8; 4]>>();
+        let dst_ip = kani::any::<Option<[u8; 4]>>();
+        let protocol = kani::any::<Option<u8>>();
+        let _ = semantics::matches_l3_formal(&l3_match, src_ip, dst_ip, protocol);
+        
+        // Test L4 matching
+        let l4_match = kani::any::<Layer4Match>();
+        let src_port = kani::any::<Option<u16>>();
+        let dst_port = kani::any::<Option<u16>>();
+        let _ = semantics::matches_l4_formal(&l4_match, protocol, src_port, dst_port, src_ip, dst_ip, &l3_match);
+    }
 }
 
 /// Non-Kani fallback: Runtime verification when Kani is not available

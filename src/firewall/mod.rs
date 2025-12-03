@@ -610,46 +610,60 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
             (None, None, None, None, None, false, 0, None)
         };
         
-        // RFC 791 Compliance: Check fragment tracking
-        // According to RFC 791, fragments can arrive out of order, but for security,
-        // a firewall should only accept fragments if the first fragment (offset=0) has been accepted.
-        // This prevents fragment-based attacks where malicious fragments are sent without the first fragment.
-        if is_fragment {
-            if let Some(first_seen) = self.check_fragment_tracking(src_ip, dst_ip, ip_id, protocol, fragment_offset) {
-                if !first_seen {
-                    // Fragment received but first fragment (offset=0) not seen - drop it
-                    // This is RFC 791 compliant: we require the first fragment to establish the fragment chain
-                    return Ok(MatchResult::Drop);
-                }
-            }
-        }
-        
-        // EARLY CONNECTION TRACKING: Check if packet belongs to established connection
-        // This allows fast-path acceptance before checking rules
-        // Skip connection tracking for UDP one-way rules (they need rule matching to detect reverse)
-        let skip_connection_tracking = if protocol == Some(PROTOCOL_UDP) {
-            // For UDP, check if any rule has one_way=true - if so, skip early tracking
-            // to allow rule matching to detect reverse packets
-            self.rules.iter().any(|rule| {
-                if let Layer4Match::Match { protocol: rule_protocol, one_way, .. } = &rule.l4_match {
-                    *rule_protocol == PROTOCOL_UDP && *one_way
-                } else {
-                    false
-                }
-            })
-        } else {
-            false
-        };
-        
-        if !skip_connection_tracking {
-            if let Some(result) = self.check_connection_tracking(src_ip, dst_ip, protocol, src_port, dst_port, packet) {
-                return Ok(result);
-            }
-        }
-        
-        // Match against rules in order
+        // Quick pass: check if any rule matches at L2/VLAN level
+        // This determines if we need fragment/connection tracking
+        let mut has_l2_match = false;
         for rule in &self.rules {
-            if self.matches_rule(rule, src_mac, dst_mac, ethertype, vlan_id, src_ip, dst_ip, protocol, src_port, dst_port, is_fragment) {
+            if self.matches_l2(rule, src_mac, dst_mac, ethertype, vlan_id) {
+                has_l2_match = true;
+                break; // Found at least one L2 match, can stop
+            }
+        }
+        
+        // If L2/VLAN matches, check fragment and connection tracking (only for IP packets)
+        // Fragment and connection tracking is done AFTER L2/VLAN rules but BEFORE L3/L4 rules
+        if has_l2_match && ethertype == IPV4_ETHERTYPE {
+            // RFC 791 Compliance: Check fragment tracking
+            if is_fragment {
+                if let Some(first_seen) = self.check_fragment_tracking(src_ip, dst_ip, ip_id, protocol, fragment_offset) {
+                    if !first_seen {
+                        // Fragment received but first fragment (offset=0) not seen - drop it
+                        return Ok(MatchResult::Drop);
+                    }
+                }
+            }
+            
+            // Determine if we should skip connection tracking for UDP one-way rules
+            let skip_connection_tracking = if protocol == Some(PROTOCOL_UDP) {
+                self.rules.iter().any(|rule| {
+                    if let Layer4Match::Match { protocol: rule_protocol, one_way, .. } = &rule.l4_match {
+                        *rule_protocol == PROTOCOL_UDP && *one_way
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
+            };
+            
+            // EARLY CONNECTION TRACKING: Check if packet belongs to established connection
+            if !skip_connection_tracking {
+                if let Some(result) = self.check_connection_tracking(src_ip, dst_ip, protocol, src_port, dst_port, packet) {
+                    return Ok(result);
+                }
+            }
+        }
+        
+        // Match against rules in order (single pass - fragment/connection tracking already done)
+        // For rules that matched L2, we can skip L2 check in matches_rule
+        for rule in &self.rules {
+            // Quick L2 check first
+            if !self.matches_l2(rule, src_mac, dst_mac, ethertype, vlan_id) {
+                continue;
+            }
+            
+            // L2 matches - check full rule (skip L2 in matches_rule since we already checked)
+            if self.matches_rule(rule, src_mac, dst_mac, ethertype, vlan_id, src_ip, dst_ip, protocol, src_port, dst_port, is_fragment, true) {
                 let result = match rule.action {
                     Action::Accept => {
                         // Track UDP connections after acceptance (but not one-way)
@@ -677,23 +691,17 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
         Ok(MatchResult::Drop)
     }
     
-    fn matches_rule(
+    /// Check if L2/VLAN matches (used for early filtering)
+    fn matches_l2(
         &self,
         rule: &FirewallRule,
         src_mac: &[u8],
         dst_mac: &[u8],
         ethertype: u16,
         vlan_id: Option<u16>,
-        src_ip: Option<[u8; 4]>,
-        dst_ip: Option<[u8; 4]>,
-        protocol: Option<u8>,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        is_fragment: bool,
     ) -> bool {
-        // Match L2
         match &rule.l2_match {
-            Layer2Match::Any => {}
+            Layer2Match::Any => true,
             Layer2Match::Match { src_mac: rule_src, dst_mac: rule_dst, ethertype: rule_ethertype, vlan_id: rule_vlan } => {
                 if let Some(rule_src) = rule_src {
                     if src_mac != rule_src.as_slice() {
@@ -724,10 +732,31 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
                             return false;
                         }
                     }
-                } else {
-                    // Rule doesn't specify VLAN - matches packets with or without VLAN tags
-                    // (no additional check needed)
                 }
+                true
+            }
+        }
+    }
+    
+    fn matches_rule(
+        &self,
+        rule: &FirewallRule,
+        src_mac: &[u8],
+        dst_mac: &[u8],
+        ethertype: u16,
+        vlan_id: Option<u16>,
+        src_ip: Option<[u8; 4]>,
+        dst_ip: Option<[u8; 4]>,
+        protocol: Option<u8>,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        is_fragment: bool,
+        l2_already_matched: bool,
+    ) -> bool {
+        // Match L2 (skip if already matched)
+        if !l2_already_matched {
+            if !self.matches_l2(rule, src_mac, dst_mac, ethertype, vlan_id) {
+                return false;
             }
         }
         

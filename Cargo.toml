@@ -16,7 +16,7 @@ name = "firewall_performance"
 harness = false
 
 [dependencies]
-smoltcp = { version = "0.10", default-features = false, features = ["proto-ipv4"] }
+smoltcp = { version = "0.12", default-features = false, features = ["proto-ipv4"] }
 pest = { version = "2.7", default-features = false }
 pest_derive = { version = "2.7", default-features = false }
 heapless = "0.7"

@@ -76,7 +76,7 @@ fn run_network_mode(args: &[String]) {
     println!("      For real Ethernet packet capture, use raw sockets or TAP interface.\n");
     
     // Create firewall with rules
-    let firewall = create_firewall();
+    let mut firewall = create_firewall();
     
     // Create a simple UDP-based network stack
     

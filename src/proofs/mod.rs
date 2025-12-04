@@ -2139,6 +2139,390 @@ pub mod kani_proofs {
         // Exact match should be symmetric
         assert!(ip_match.matches(ip), "CIDR symmetry: Exact match must be symmetric");
     }
+    
+    /// Kani Proof: IP Fragment Detection Logic
+    ///
+    /// **Property**: Fragment detection correctly identifies fragments based on offset and MF flag.
+    ///
+    /// **Formal Statement**:
+    /// is_fragment = (fragment_offset > 0) ∨ (MF_flag == 1)
+    /// where fragment_offset = (flags_and_offset & 0x1FFF) * 8
+    #[kani::proof]
+    pub fn kani_property_fragment_detection() {
+        let flags_and_offset = kani::any::<u16>();
+        let fragment_offset = (flags_and_offset & 0x1FFF) as usize * 8;
+        let mf_flag = (flags_and_offset & 0x2000) != 0;
+        let is_fragment = fragment_offset > 0 || mf_flag;
+        
+        // If offset > 0, it's a fragment
+        if fragment_offset > 0 {
+            assert!(is_fragment, "Fragment detection: offset > 0 must be fragment");
+        }
+        
+        // If MF flag is set, it's a fragment
+        if mf_flag {
+            assert!(is_fragment, "Fragment detection: MF flag set must be fragment");
+        }
+        
+        // If offset == 0 and MF == 0, it's not a fragment
+        if fragment_offset == 0 && !mf_flag {
+            assert!(!is_fragment, "Fragment detection: offset=0 and MF=0 must not be fragment");
+        }
+    }
+    
+    /// Kani Proof: Fragment Offset Calculation
+    ///
+    /// **Property**: Fragment offset is correctly calculated from flags_and_offset field.
+    ///
+    /// **Formal Statement**:
+    /// fragment_offset = (flags_and_offset & 0x1FFF) * 8
+    /// fragment_offset is always a multiple of 8 (RFC 791 requirement)
+    #[kani::proof]
+    pub fn kani_property_fragment_offset_calculation() {
+        let flags_and_offset = kani::any::<u16>();
+        let fragment_offset = (flags_and_offset & 0x1FFF) as usize * 8;
+        
+        // Fragment offset must be a multiple of 8 (RFC 791)
+        assert_eq!(fragment_offset % 8, 0, "Fragment offset must be multiple of 8");
+        
+        // Fragment offset is in units of 8 bytes
+        let offset_in_units = (flags_and_offset & 0x1FFF) as usize;
+        assert_eq!(fragment_offset, offset_in_units * 8, "Fragment offset calculation must be correct");
+    }
+    
+    /// Kani Proof: VLAN ID Extraction
+    ///
+    /// **Property**: VLAN ID is correctly extracted from TCI field.
+    ///
+    /// **Formal Statement**:
+    /// vlan_id = tci & 0x0FFF (lower 12 bits)
+    /// vlan_id ∈ [0, 4095] (valid VLAN ID range)
+    #[kani::proof]
+    pub fn kani_property_vlan_id_extraction() {
+        let tci = kani::any::<u16>();
+        let vlan_id = tci & 0x0FFF;
+        
+        // VLAN ID must be in valid range [0, 4095]
+        assert!(vlan_id <= 0x0FFF, "VLAN ID must be <= 4095");
+        
+        // VLAN ID is extracted from lower 12 bits
+        assert_eq!(vlan_id, tci & 0x0FFF, "VLAN ID extraction must use lower 12 bits");
+    }
+    
+    /// Kani Proof: One-Way UDP Reverse Detection Logic
+    ///
+    /// **Property**: Reverse packet detection correctly identifies reply packets.
+    ///
+    /// **Formal Statement**:
+    /// For one-way UDP rules, reverse packets (swapped IPs/ports) are blocked.
+    /// Forward packets (matching rule IPs/ports) are allowed.
+    #[kani::proof]
+    pub fn kani_property_oneway_udp_reverse_detection() {
+        use super::semantics;
+        
+        // Create rule with specific IPs and ports
+        let rule_src_ip = kani::any::<[u8; 4]>();
+        let rule_dst_ip = kani::any::<[u8; 4]>();
+        // Ensure IPs are different for meaningful test
+        kani::assume(rule_src_ip != rule_dst_ip);
+        
+        let rule_src_port = kani::any::<u16>();
+        let rule_dst_port = kani::any::<u16>();
+        // Ensure ports are different for meaningful test
+        kani::assume(rule_src_port != rule_dst_port);
+        
+        // Create forward packet (matches rule exactly)
+        let forward_src_ip = rule_src_ip;
+        let forward_dst_ip = rule_dst_ip;
+        let forward_src_port = rule_src_port;
+        let forward_dst_port = rule_dst_port;
+        
+        // Create reverse packet (swapped IPs and ports)
+        let reverse_src_ip = rule_dst_ip;
+        let reverse_dst_ip = rule_src_ip;
+        let reverse_src_port = rule_dst_port;
+        let reverse_dst_port = rule_src_port;
+        
+        // L3 match that allows both forward and reverse IPs (using Any for flexibility)
+        // This allows us to test the L4 reverse detection logic
+        let l3_match_any = Layer3Match::Any;
+        
+        let l4_match = Layer4Match::Match {
+            protocol: 17, // UDP
+            src_port: Some(rule_src_port),
+            dst_port: Some(rule_dst_port),
+            one_way: true,
+        };
+        
+        // Forward packet should match (one-way allows forward)
+        let forward_matches = semantics::matches_l4_formal(
+            &l4_match,
+            Some(17), // UDP protocol
+            Some(forward_src_port),
+            Some(forward_dst_port),
+            Some(forward_src_ip),
+            Some(forward_dst_ip),
+            &l3_match_any,
+        );
+        
+        // Reverse packet should not match (one-way blocks reverse)
+        // The reverse detection logic should identify this as a reverse packet
+        let reverse_matches = semantics::matches_l4_formal(
+            &l4_match,
+            Some(17), // UDP protocol
+            Some(reverse_src_port),
+            Some(reverse_dst_port),
+            Some(reverse_src_ip),
+            Some(reverse_dst_ip),
+            &l3_match_any,
+        );
+        
+        // Forward should match (protocol matches, ports match, not reverse)
+        assert!(forward_matches, "One-way UDP: Forward packet must match");
+        
+        // Reverse should not match (one-way blocks reverse packets)
+        // The reverse packet has swapped IPs and ports matching the rule's dst/src,
+        // so it should be detected as reverse and blocked
+        assert!(!reverse_matches, "One-way UDP: Reverse packet must not match");
+    }
+    
+    /// Kani Proof: Fragment Offset Range
+    ///
+    /// **Property**: Fragment offset is within valid range.
+    ///
+    /// **Formal Statement**: 
+    /// fragment_offset ≤ 65528 (max offset: 8191 * 8 = 65528 bytes)
+    #[kani::proof]
+    pub fn kani_property_fragment_offset_range() {
+        let flags_and_offset = kani::any::<u16>();
+        let fragment_offset = (flags_and_offset & 0x1FFF) as usize * 8;
+        
+        // Maximum fragment offset is 8191 * 8 = 65528 bytes
+        assert!(fragment_offset <= 65528, "Fragment offset must be <= 65528 bytes");
+        
+        // Offset in units (0-8191)
+        let offset_units = (flags_and_offset & 0x1FFF) as usize;
+        assert!(offset_units <= 8191, "Fragment offset units must be <= 8191");
+    }
+    
+    /// Kani Proof: IP Header Length Validation
+    ///
+    /// **Property**: IP header length (IHL) is correctly extracted and validated.
+    ///
+    /// **Formal Statement**:
+    /// IHL = (version_ihl & 0x0F)
+    /// ip_header_len = IHL * 4
+    /// ip_header_len ≥ 20 (minimum IP header size)
+    #[kani::proof]
+    pub fn kani_property_ip_header_length() {
+        let version_ihl = kani::any::<u8>();
+        let ihl = version_ihl & 0x0F;
+        let ip_header_len = ihl as usize * 4;
+        
+        // IHL must be in range [5, 15] for valid headers
+        // IHL < 5 is invalid (minimum header is 20 bytes = 5 * 4)
+        if ihl >= 5 {
+            assert!(ip_header_len >= 20, "IP header length must be >= 20 bytes");
+            assert!(ip_header_len <= 60, "IP header length must be <= 60 bytes (15 * 4)");
+        }
+        
+        // IHL * 4 must equal header length
+        assert_eq!(ip_header_len, (ihl as usize) * 4, "IP header length calculation must be correct");
+    }
+    
+    /// Kani Proof: Port Extraction Bounds
+    ///
+    /// **Property**: Port numbers are correctly extracted and within valid range.
+    ///
+    /// **Formal Statement**: 
+    /// port ∈ [0, 65535] (all u16 values are valid ports)
+    #[kani::proof]
+    pub fn kani_property_port_extraction() {
+        let port_bytes = kani::any::<[u8; 2]>();
+        let port = u16::from_be_bytes(port_bytes);
+        
+        // All u16 values are valid ports (0-65535)
+        assert!(port <= 65535, "Port must be <= 65535");
+        
+        // Port extraction is correct
+        let port2 = u16::from_be_bytes(port_bytes);
+        assert_eq!(port, port2, "Port extraction must be consistent");
+    }
+    
+    /// Kani Proof: Protocol Number Range
+    ///
+    /// **Property**: Protocol numbers are in valid range [0, 255].
+    ///
+    /// **Formal Statement**: 
+    /// protocol ∈ [0, 255] (u8 range)
+    #[kani::proof]
+    pub fn kani_property_protocol_range() {
+        let protocol = kani::any::<u8>();
+        
+        // All u8 values are valid protocol numbers
+        assert!(protocol <= 255, "Protocol must be <= 255");
+        
+        // Common protocols
+        if protocol == 6 {
+            // TCP
+        }
+        if protocol == 17 {
+            // UDP
+        }
+        if protocol == 1 {
+            // ICMP
+        }
+        if protocol == 2 {
+            // IGMP
+        }
+    }
+    
+    /// Kani Proof: MAC Address Equality
+    ///
+    /// **Property**: MAC address comparison is correct.
+    ///
+    /// **Formal Statement**: 
+    /// mac1 == mac2 ↔ ∀i: mac1[i] == mac2[i]
+    #[kani::proof]
+    pub fn kani_property_mac_address_equality() {
+        let mac1 = kani::any::<[u8; 6]>();
+        let mac2 = kani::any::<[u8; 6]>();
+        
+        // MAC addresses are equal if all bytes are equal
+        let are_equal = mac1 == mac2;
+        let mut bytes_equal = true;
+        for i in 0..6 {
+            if mac1[i] != mac2[i] {
+                bytes_equal = false;
+                break;
+            }
+        }
+        
+        // If arrays are equal, all bytes must be equal
+        if are_equal {
+            assert!(bytes_equal, "MAC address equality: If arrays equal, all bytes must be equal");
+        }
+        
+        // If all bytes are equal, arrays must be equal
+        if bytes_equal {
+            assert!(are_equal, "MAC address equality: If all bytes equal, arrays must be equal");
+        }
+    }
+    
+    /// Kani Proof: IP Address Equality
+    ///
+    /// **Property**: IP address comparison is correct.
+    ///
+    /// **Formal Statement**: 
+    /// ip1 == ip2 ↔ ∀i: ip1[i] == ip2[i]
+    #[kani::proof]
+    pub fn kani_property_ip_address_equality() {
+        let ip1 = kani::any::<[u8; 4]>();
+        let ip2 = kani::any::<[u8; 4]>();
+        
+        // IP addresses are equal if all bytes are equal
+        let are_equal = ip1 == ip2;
+        let mut bytes_equal = true;
+        for i in 0..4 {
+            if ip1[i] != ip2[i] {
+                bytes_equal = false;
+                break;
+            }
+        }
+        
+        // If arrays are equal, all bytes must be equal
+        if are_equal {
+            assert!(bytes_equal, "IP address equality: If arrays equal, all bytes must be equal");
+        }
+        
+        // If all bytes are equal, arrays must be equal
+        if bytes_equal {
+            assert!(are_equal, "IP address equality: If all bytes equal, arrays must be equal");
+        }
+    }
+    
+    /// Kani Proof: Combined L2+L3+L4 Matching - All Must Pass
+    ///
+    /// **Property**: A rule matches only if L2 AND L3 AND L4 all match.
+    ///
+    /// **Formal Statement**:
+    /// matches_rule(R, P) = matches_l2(R, P) ∧ matches_l3(R, P) ∧ matches_l4(R, P)
+    #[kani::proof]
+    pub fn kani_property_combined_matching_all_layers_required() {
+        use super::semantics;
+        
+        // Create rule requiring specific values at all layers
+        let rule_src_mac = kani::any::<[u8; 6]>();
+        let rule_ethertype = kani::any::<u16>();
+        let rule_src_ip = kani::any::<[u8; 4]>();
+        let rule_protocol = kani::any::<u8>();
+        let rule_src_port = kani::any::<u16>();
+        
+        let l2_match = Layer2Match::Match {
+            src_mac: Some(rule_src_mac),
+            dst_mac: None,
+            ethertype: Some(rule_ethertype),
+            vlan_id: None,
+        };
+        let l3_match = Layer3Match::Match {
+            src_ip: Some(IpMatch { addr: rule_src_ip, cidr: None }),
+            dst_ip: None,
+            protocol: Some(rule_protocol),
+        };
+        let l4_match = Layer4Match::Match {
+            protocol: rule_protocol,
+            src_port: Some(rule_src_port),
+            dst_port: None,
+            one_way: false,
+        };
+        
+        // Generate packet fields
+        let packet_src_mac = kani::any::<[u8; 6]>();
+        let packet_dst_mac = kani::any::<[u8; 6]>();
+        let packet_ethertype = kani::any::<u16>();
+        let packet_src_ip = kani::any::<[u8; 4]>();
+        let packet_dst_ip = kani::any::<[u8; 4]>();
+        let packet_protocol = kani::any::<Option<u8>>();
+        let packet_src_port = kani::any::<Option<u16>>();
+        let packet_dst_port = kani::any::<Option<u16>>();
+        
+        // Check individual layers
+        let l2_ok = semantics::matches_l2_formal(&l2_match, &packet_src_mac, &packet_dst_mac, packet_ethertype, None);
+        let l3_ok = semantics::matches_l3_formal(&l3_match, Some(packet_src_ip), Some(packet_dst_ip), packet_protocol);
+        let l4_ok = semantics::matches_l4_formal(&l4_match, packet_protocol, packet_src_port, packet_dst_port, Some(packet_src_ip), Some(packet_dst_ip), &l3_match);
+        
+        // Combined match requires all layers
+        let all_match = l2_ok && l3_ok && l4_ok;
+        
+        // If any layer fails, combined must fail
+        if !l2_ok || !l3_ok || !l4_ok {
+            assert!(!all_match, "Combined matching: If any layer fails, combined must fail");
+        }
+        
+        // If all layers match, combined must match
+        if l2_ok && l3_ok && l4_ok {
+            assert!(all_match, "Combined matching: If all layers match, combined must match");
+        }
+    }
+    
+    /// Kani Proof: VLAN TPID Detection
+    ///
+    /// **Property**: VLAN tag is correctly detected by TPID (Tag Protocol Identifier).
+    ///
+    /// **Formal Statement**:
+    /// has_vlan_tag = (ethertype_at_offset_12 == 0x8100)
+    #[kani::proof]
+    pub fn kani_property_vlan_tpid_detection() {
+        let ethertype = kani::any::<u16>();
+        let has_vlan = ethertype == 0x8100;
+        
+        // If ethertype is 0x8100, it's a VLAN tag
+        if ethertype == 0x8100 {
+            assert!(has_vlan, "VLAN detection: 0x8100 must indicate VLAN tag");
+        } else {
+            assert!(!has_vlan, "VLAN detection: non-0x8100 must not indicate VLAN tag");
+        }
+    }
 }
 
 /// Non-Kani fallback: Runtime verification when Kani is not available

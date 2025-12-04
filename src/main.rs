@@ -199,9 +199,9 @@ fn create_firewall() -> Firewall<32, 1024, 512> {
     // This would be: ACCEPT ip src ip 192.168.1.0/24 udp dst port 53 oneway
     // (Not added to default rules, but available for use)
     
-    // Rule 3: Block ICMP
+    // Rule 3: Allow ICMP (for testing - change to Drop to block)
     let _ = firewall.add_rule(FirewallRule {
-        action: Action::Drop,
+        action: Action::Accept,
         l2_match: Layer2Match::Any,
         l3_match: Layer3Match::Match {
             src_ip: None,

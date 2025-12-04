@@ -246,17 +246,36 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
     pub fn run(&mut self) -> io::Result<()> {
         let (tap, ifname) = self.create_tap()?;
         
-        println!("\nTAP interface '{}' is ready!", ifname);
+        println!("\nTAP/TUN interface '{}' is ready!", ifname);
         println!("Firewall rules active:");
         println!("  - Allow HTTP (TCP port 80) to 192.168.1.1");
         println!("  - Allow UDP from 10.0.0.0/8");
-        println!("  - Block ICMP");
+        println!("  - Allow ICMP (for testing)");
         println!("  - Allow IGMP (multicast)");
         println!("  - Allow MAC aa:bb:cc:dd:ee:ff");
-        println!("\nProcessing packets from TAP interface... (Ctrl+C to stop)\n");
+        println!("\nProcessing packets from TAP/TUN interface... (Ctrl+C to stop)");
         println!("You can test by:");
-        println!("  1. Configure the interface: sudo ip addr add 192.168.100.1/24 dev {}", ifname);
-        println!("  2. Ping or send traffic to the interface");
+        #[cfg(target_os = "macos")]
+        {
+            println!("  1. Bring the interface up:");
+            println!("     sudo ifconfig {} up", ifname);
+            println!("  2. Set IP address:");
+            println!("     sudo ifconfig {} 192.168.100.1 192.168.100.1", ifname);
+            println!("  3. Add route to send traffic to the interface:");
+            println!("     sudo route add -host 192.168.100.1 {}", ifname);
+            println!("  4. Verify interface:");
+            println!("     ifconfig {}", ifname);
+            println!("  5. Test with ping (from another terminal):");
+            println!("     ping 192.168.100.1");
+            println!("\nAlternative: Use tcpdump to verify packets are reaching the interface:");
+            println!("     sudo tcpdump -i {} -v", ifname);
+            println!("\nNote: On macOS, utun interfaces need routes to receive traffic.");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            println!("  1. Configure the interface: sudo ip addr add 192.168.100.1/24 dev {}", ifname);
+            println!("  2. Ping or send traffic to the interface");
+        }
         println!();
         
         // Convert TUN device to file descriptor for reading
@@ -268,30 +287,95 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
         #[cfg(unix)]
         let mut tap_reader = unsafe { std::fs::File::from_raw_fd(fd) };
         
+        // Debug: Check interface status
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            let output = Command::new("ifconfig")
+                .arg(&ifname)
+                .output();
+            if let Ok(o) = output {
+                if let Ok(output_str) = String::from_utf8(o.stdout) {
+                    if output_str.contains("UP") {
+                        println!("DEBUG: Interface {} is UP (fd: {})", ifname, fd);
+                    } else {
+                        println!("DEBUG: WARNING - Interface {} may not be UP (fd: {})", ifname, fd);
+                    }
+                }
+            }
+        }
+        
+        // Set non-blocking mode for the file descriptor
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            use libc;
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags >= 0 {
+                let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+                println!("DEBUG: Set non-blocking mode on fd {}", fd);
+            } else {
+                println!("DEBUG: WARNING - Failed to get flags for fd {}", fd);
+            }
+        }
+        println!();
+        
         let mut buf = [0u8; 1522]; // Ethernet frame max size
+        let mut heartbeat_counter = 0u64;
+        
+        println!("Waiting for packets... (Press Ctrl+C to stop)");
+        println!("Note: The interface is ready. Send traffic to it to see packets.\n");
         
         loop {
             #[cfg(unix)]
             match tap_reader.read(&mut buf) {
                 Ok(0) => {
-                    // EOF (shouldn't happen with TAP, but handle gracefully)
+                    // EOF (shouldn't happen with TAP/TUN, but handle gracefully)
                 }
-                Ok(size) if size >= 14 => {
-                    // Valid Ethernet frame
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // No packet available (non-blocking mode)
+                    heartbeat_counter += 1;
+                    if heartbeat_counter % 100000 == 0 {
+                        // Print heartbeat every ~100k iterations (shows we're alive)
+                        print!(".");
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    }
+                    // Small sleep to avoid busy-waiting
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+                Err(e) => {
+                    eprintln!("\nError reading from interface: {}", e);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Ok(size) if size >= 20 => {
+                    heartbeat_counter = 0; // Reset heartbeat on packet
+                    // Valid packet (minimum IP header size for TUN, or Ethernet frame for TAP)
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    println!("\n[{}] Received {} bytes from TAP interface", timestamp, size);
+                    println!("\n[{}] Received {} bytes from TAP/TUN interface", timestamp, size);
                     
-                    // Parse Ethernet header for display
-                    let dst_mac = &buf[0..6];
-                    let src_mac = &buf[6..12];
-                    let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
-                    println!("  Ethernet: {} -> {} (type: 0x{:04x})",
-                        format_mac(src_mac),
-                        format_mac(dst_mac),
-                        ethertype);
+                    // Detect packet format: Ethernet frame (TAP) vs raw IP (TUN)
+                    if size >= 14 && (buf[0] & 0xF0) != 0x40 {
+                        // Likely Ethernet frame (TAP mode)
+                        let dst_mac = &buf[0..6];
+                        let src_mac = &buf[6..12];
+                        let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
+                        println!("  Ethernet: {} -> {} (type: 0x{:04x})",
+                            format_mac(src_mac),
+                            format_mac(dst_mac),
+                            ethertype);
+                    } else if size >= 20 && (buf[0] & 0xF0) == 0x40 {
+                        // Raw IP packet (TUN mode on macOS)
+                        let version = (buf[0] >> 4) & 0x0F;
+                        let ihl = (buf[0] & 0x0F) * 4;
+                        let protocol = if size >= 9 { buf[9] } else { 0 };
+                        let src_ip = if size >= 16 { format!("{}.{}.{}.{}", buf[12], buf[13], buf[14], buf[15]) } else { "?.?.?.?".to_string() };
+                        let dst_ip = if size >= 20 { format!("{}.{}.{}.{}", buf[16], buf[17], buf[18], buf[19]) } else { "?.?.?.?".to_string() };
+                        println!("  IP: {} -> {} (version: {}, protocol: {}, header: {} bytes)",
+                            src_ip, dst_ip, version, protocol, ihl);
+                    }
                     
                     // Convert to heapless::Vec for firewall processing
                     let mut packet = Vec::<u8, 1500>::new();
@@ -317,7 +401,7 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
                     }
                 }
                 Ok(_) => {
-                    // Packet too short (< 14 bytes), ignore
+                    // Packet too short, ignore
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // No packet available

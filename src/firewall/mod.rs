@@ -543,33 +543,43 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
             self.cleanup_fragments(FRAGMENT_TIMEOUT);
         }
         
-        // Parse Ethernet header
-        if packet.len() < ETHERNET_HEADER_SIZE {
-            return Err(FirewallError::InvalidPacket);
-        }
-        
-        let dst_mac = &packet[ETHERNET_DST_MAC_OFFSET..ETHERNET_DST_MAC_OFFSET + MAC_ADDRESS_SIZE];
-        let src_mac = &packet[ETHERNET_SRC_MAC_OFFSET..ETHERNET_SRC_MAC_OFFSET + MAC_ADDRESS_SIZE];
-        
-        // Check for VLAN tag (802.1Q) - ethertype 0x8100 indicates VLAN tag
-        let (ethertype, vlan_id, ip_offset) = if packet.len() >= ETHERNET_HEADER_WITH_VLAN_SIZE {
-            let potential_ethertype = u16::from_be_bytes([packet[ETHERNET_ETHERTYPE_OFFSET], packet[ETHERNET_ETHERTYPE_OFFSET + 1]]);
-            if potential_ethertype == VLAN_TPID {
-                // VLAN tagged frame
-                // TCI (Tag Control Information) is at bytes 14-15
-                // VLAN ID is in lower 12 bits of TCI
-                let tci = u16::from_be_bytes([packet[VLAN_TCI_OFFSET], packet[VLAN_TCI_OFFSET + 1]]);
-                let vid = tci & VLAN_ID_MASK; // Extract VLAN ID (12 bits)
-                // Real ethertype is at bytes 16-17
-                let real_ethertype = u16::from_be_bytes([packet[VLAN_ETHERTYPE_OFFSET], packet[VLAN_ETHERTYPE_OFFSET + 1]]);
-                (real_ethertype, Some(vid), ETHERNET_HEADER_WITH_VLAN_SIZE) // IP header starts at offset 18
+        // Detect packet format: Ethernet frame (TAP) vs raw IP packet (TUN)
+        // Raw IP packets start with IP version (0x45 for IPv4, IHL=5)
+        // Ethernet frames start with MAC addresses
+        static DUMMY_MAC: [u8; 6] = [0u8; 6];
+        let (dst_mac, src_mac, ethertype, vlan_id, ip_offset) = if packet.len() >= IP_HEADER_MIN_SIZE && 
+            (packet[0] & 0xF0) == 0x40 && (packet[0] & 0x0F) >= 5 {
+            // Raw IP packet (TUN mode) - no Ethernet header
+            // Use dummy MAC addresses for L2 matching (will match Layer2Match::Any)
+            (DUMMY_MAC.as_slice(), DUMMY_MAC.as_slice(), IPV4_ETHERTYPE, None, 0)
+        } else if packet.len() >= ETHERNET_HEADER_SIZE {
+            // Ethernet frame (TAP mode)
+            let dst_mac = &packet[ETHERNET_DST_MAC_OFFSET..ETHERNET_DST_MAC_OFFSET + MAC_ADDRESS_SIZE];
+            let src_mac = &packet[ETHERNET_SRC_MAC_OFFSET..ETHERNET_SRC_MAC_OFFSET + MAC_ADDRESS_SIZE];
+            
+            // Check for VLAN tag (802.1Q) - ethertype 0x8100 indicates VLAN tag
+            let (ethertype, vlan_id, ip_offset) = if packet.len() >= ETHERNET_HEADER_WITH_VLAN_SIZE {
+                let potential_ethertype = u16::from_be_bytes([packet[ETHERNET_ETHERTYPE_OFFSET], packet[ETHERNET_ETHERTYPE_OFFSET + 1]]);
+                if potential_ethertype == VLAN_TPID {
+                    // VLAN tagged frame
+                    // TCI (Tag Control Information) is at bytes 14-15
+                    // VLAN ID is in lower 12 bits of TCI
+                    let tci = u16::from_be_bytes([packet[VLAN_TCI_OFFSET], packet[VLAN_TCI_OFFSET + 1]]);
+                    let vid = tci & VLAN_ID_MASK; // Extract VLAN ID (12 bits)
+                    // Real ethertype is at bytes 16-17
+                    let real_ethertype = u16::from_be_bytes([packet[VLAN_ETHERTYPE_OFFSET], packet[VLAN_ETHERTYPE_OFFSET + 1]]);
+                    (real_ethertype, Some(vid), ETHERNET_HEADER_WITH_VLAN_SIZE) // IP header starts at offset 18
+                } else {
+                    // No VLAN tag
+                    (potential_ethertype, None, ETHERNET_HEADER_SIZE) // IP header starts at offset 14
+                }
             } else {
-                // No VLAN tag
-                (potential_ethertype, None, ETHERNET_HEADER_SIZE) // IP header starts at offset 14
-            }
+                let ethertype = u16::from_be_bytes([packet[ETHERNET_ETHERTYPE_OFFSET], packet[ETHERNET_ETHERTYPE_OFFSET + 1]]);
+                (ethertype, None, ETHERNET_HEADER_SIZE)
+            };
+            (dst_mac, src_mac, ethertype, vlan_id, ip_offset)
         } else {
-            let ethertype = u16::from_be_bytes([packet[ETHERNET_ETHERTYPE_OFFSET], packet[ETHERNET_ETHERTYPE_OFFSET + 1]]);
-            (ethertype, None, ETHERNET_HEADER_SIZE)
+            return Err(FirewallError::InvalidPacket);
         };
         
         // Parse IP header if present (Ethertype 0x0800 for IPv4)

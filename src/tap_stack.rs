@@ -9,9 +9,104 @@ use std::io;
 use std::io::Read;
 #[cfg(feature = "std")]
 use std::time::Duration;
-use crate::firewall::{Firewall, MatchResult};
+use crate::firewall::{Firewall, MatchResult, Action, Layer2Match, Layer3Match, Layer4Match};
 use crate::stack::VirtualStack;
 use heapless::Vec;
+
+/// Format a rule description for logging
+fn format_rule<const N: usize, const C: usize, const F: usize>(firewall: &mut Firewall<N, C, F>, rule_idx: usize) -> String {
+    if rule_idx >= firewall.rules.len() {
+        return format!("Rule #{} (invalid)", rule_idx);
+    }
+    let rule = &firewall.rules[rule_idx];
+    let action_str = match rule.action {
+        Action::Accept => "ACCEPT",
+        Action::Drop => "DROP",
+        Action::Reject => "REJECT",
+    };
+    
+    let mut parts = std::vec::Vec::<String>::new();
+    
+    // L2 match
+    match &rule.l2_match {
+        Layer2Match::Any => parts.push("L2:*".to_string()),
+        Layer2Match::Match { src_mac, dst_mac, ethertype, vlan_id } => {
+            if let Some(mac) = src_mac {
+                parts.push(format!("L2:src_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", 
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]));
+            }
+            if let Some(mac) = dst_mac {
+                parts.push(format!("L2:dst_mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", 
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]));
+            }
+            if let Some(et) = ethertype {
+                parts.push(format!("L2:ethertype=0x{:04x}", et));
+            }
+            if let Some(vid) = vlan_id {
+                parts.push(format!("L2:vlan={}", vid));
+            }
+        }
+    }
+    
+    // L3 match
+    match &rule.l3_match {
+        Layer3Match::Any => parts.push("L3:*".to_string()),
+        Layer3Match::Match { src_ip, dst_ip, protocol } => {
+            if let Some(ip) = src_ip {
+                if let Some(cidr) = ip.cidr {
+                    parts.push(format!("L3:src_ip={}.{}.{}.{}/{}", 
+                        ip.addr[0], ip.addr[1], ip.addr[2], ip.addr[3], cidr));
+                } else {
+                    parts.push(format!("L3:src_ip={}.{}.{}.{}", 
+                        ip.addr[0], ip.addr[1], ip.addr[2], ip.addr[3]));
+                }
+            }
+            if let Some(ip) = dst_ip {
+                if let Some(cidr) = ip.cidr {
+                    parts.push(format!("L3:dst_ip={}.{}.{}.{}/{}", 
+                        ip.addr[0], ip.addr[1], ip.addr[2], ip.addr[3], cidr));
+                } else {
+                    parts.push(format!("L3:dst_ip={}.{}.{}.{}", 
+                        ip.addr[0], ip.addr[1], ip.addr[2], ip.addr[3]));
+                }
+            }
+            if let Some(proto) = protocol {
+                let proto_str = match *proto {
+                    1 => "ICMP",
+                    2 => "IGMP",
+                    6 => "TCP",
+                    17 => "UDP",
+                    _ => "?",
+                };
+                parts.push(format!("L3:protocol={}({})", proto_str, proto));
+            }
+        }
+    }
+    
+    // L4 match
+    match &rule.l4_match {
+        Layer4Match::Any => parts.push("L4:*".to_string()),
+        Layer4Match::Match { protocol, src_port, dst_port, one_way } => {
+            let proto_str = match *protocol {
+                6 => "TCP",
+                17 => "UDP",
+                _ => "?",
+            };
+            parts.push(format!("L4:protocol={}", proto_str));
+            if let Some(port) = src_port {
+                parts.push(format!("L4:src_port={}", port));
+            }
+            if let Some(port) = dst_port {
+                parts.push(format!("L4:dst_port={}", port));
+            }
+            if *one_way {
+                parts.push("L4:one_way".to_string());
+            }
+        }
+    }
+    
+    format!("{} #{}: {}", action_str, rule_idx, parts.join(" "))
+}
 
 /// TAP-based VirtualStack that creates a virtual network interface
 #[cfg(feature = "std")]
@@ -357,7 +452,43 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
                     println!("\n[{}] Received {} bytes from TAP/TUN interface", timestamp, size);
                     
                     // Detect packet format: Ethernet frame (TAP) vs raw IP (TUN)
-                    if size >= 14 && (buf[0] & 0xF0) != 0x40 {
+                    // On macOS utun, packets have a 4-byte header: [0x00, 0x00, 0x00, 0x02]
+                    // where 0x02 = AF_INET (IPv4), then the IP packet follows
+                    let ip_offset_opt = if size >= 4 && buf[0] == 0x00 && buf[1] == 0x00 && buf[2] == 0x00 && buf[3] == 0x02 {
+                        // macOS utun 4-byte header present, IP starts at offset 4
+                        Some(4)
+                    } else if size >= 20 && (buf[0] & 0xF0) == 0x40 && (buf[0] & 0x0F) >= 5 {
+                        // Raw IP packet starts at offset 0 (Linux TUN or other)
+                        Some(0)
+                    } else {
+                        // Not a raw IP packet, treat as Ethernet
+                        None
+                    };
+                    
+                    if let Some(ip_offset) = ip_offset_opt {
+                        if (ip_offset + 20) <= size {
+                        // Raw IP packet (TUN mode)
+                        let ip_start = ip_offset as usize;
+                        let version = (buf[ip_start] >> 4) & 0x0F;
+                        let ihl = (buf[ip_start] & 0x0F) * 4;
+                        let protocol = if (ip_start + 9) < size { buf[ip_start + 9] } else { 0 };
+                        let src_ip = if (ip_start + 16) <= size { 
+                            format!("{}.{}.{}.{}", buf[ip_start + 12], buf[ip_start + 13], buf[ip_start + 14], buf[ip_start + 15]) 
+                        } else { "?.?.?.?".to_string() };
+                        let dst_ip = if (ip_start + 20) <= size { 
+                            format!("{}.{}.{}.{}", buf[ip_start + 16], buf[ip_start + 17], buf[ip_start + 18], buf[ip_start + 19]) 
+                        } else { "?.?.?.?".to_string() };
+                        let protocol_str = match protocol {
+                            1 => "ICMP",
+                            6 => "TCP",
+                            17 => "UDP",
+                            2 => "IGMP",
+                            _ => "?",
+                        };
+                        println!("  IP: {} -> {} (version: {}, protocol: {} ({}), header: {} bytes)",
+                            src_ip, dst_ip, version, protocol_str, protocol, ihl);
+                        }
+                    } else if size >= 14 {
                         // Likely Ethernet frame (TAP mode)
                         let dst_mac = &buf[0..6];
                         let src_mac = &buf[6..12];
@@ -366,15 +497,6 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
                             format_mac(src_mac),
                             format_mac(dst_mac),
                             ethertype);
-                    } else if size >= 20 && (buf[0] & 0xF0) == 0x40 {
-                        // Raw IP packet (TUN mode on macOS)
-                        let version = (buf[0] >> 4) & 0x0F;
-                        let ihl = (buf[0] & 0x0F) * 4;
-                        let protocol = if size >= 9 { buf[9] } else { 0 };
-                        let src_ip = if size >= 16 { format!("{}.{}.{}.{}", buf[12], buf[13], buf[14], buf[15]) } else { "?.?.?.?".to_string() };
-                        let dst_ip = if size >= 20 { format!("{}.{}.{}.{}", buf[16], buf[17], buf[18], buf[19]) } else { "?.?.?.?".to_string() };
-                        println!("  IP: {} -> {} (version: {}, protocol: {}, header: {} bytes)",
-                            src_ip, dst_ip, version, protocol, ihl);
                     }
                     
                     // Convert to heapless::Vec for firewall processing
@@ -385,11 +507,21 @@ impl<const N: usize, const C: usize, const F: usize> TapStack<N, C, F> {
                                 println!("  ✓ Packet ACCEPTED by firewall");
                                 // In a real implementation, we'd forward accepted packets
                             }
-                            Ok(MatchResult::Drop) => {
-                                println!("  ✗ Packet DROPPED by firewall");
+                            Ok(MatchResult::Drop(rule_idx)) => {
+                                if let Some(idx) = rule_idx {
+                                    let rule_desc = format_rule(self.stack.get_firewall(), idx);
+                                    println!("  ✗ Packet DROPPED by firewall - {}", rule_desc);
+                                } else {
+                                    println!("  ✗ Packet DROPPED by firewall (default deny or fragment tracking)");
+                                }
                             }
-                            Ok(MatchResult::Reject) => {
-                                println!("  ✗ Packet REJECTED by firewall");
+                            Ok(MatchResult::Reject(rule_idx)) => {
+                                if let Some(idx) = rule_idx {
+                                    let rule_desc = format_rule(self.stack.get_firewall(), idx);
+                                    println!("  ✗ Packet REJECTED by firewall - {}", rule_desc);
+                                } else {
+                                    println!("  ✗ Packet REJECTED by firewall");
+                                }
                             }
                             Ok(MatchResult::NoMatch) => {
                                 println!("  ? Packet NO MATCH (default: DROP)");

@@ -148,8 +148,8 @@ pub struct FirewallRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatchResult {
     Accept,
-    Drop,
-    Reject,
+    Drop(Option<usize>), // Optional rule index that caused the drop
+    Reject(Option<usize>), // Optional rule index that caused the reject
     NoMatch,
 }
 
@@ -270,7 +270,7 @@ struct FragmentEntry {
 }
 
 pub struct Firewall<const N: usize = 32, const C: usize = 1024, const F: usize = 512> {
-    rules: heapless::Vec<FirewallRule, N>,
+    pub rules: heapless::Vec<FirewallRule, N>,
     connections: heapless::FnvIndexMap<ConnectionId, ConnectionEntry, C>,
     fragments: heapless::FnvIndexMap<FragmentId, FragmentEntry, F>,
     packet_counter: u64,
@@ -293,6 +293,7 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
     pub fn clear_rules(&mut self) {
         self.rules.clear();
     }
+    
     
     /// Clean up expired connections (older than timeout)
     fn cleanup_connections(&mut self, timeout: u64) {
@@ -544,12 +545,22 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
         }
         
         // Detect packet format: Ethernet frame (TAP) vs raw IP packet (TUN)
+        // On macOS utun, packets have a 4-byte header: [0x00, 0x00, 0x00, 0x02] (AF_INET)
         // Raw IP packets start with IP version (0x45 for IPv4, IHL=5)
         // Ethernet frames start with MAC addresses
         static DUMMY_MAC: [u8; 6] = [0u8; 6];
-        let (dst_mac, src_mac, ethertype, vlan_id, ip_offset) = if packet.len() >= IP_HEADER_MIN_SIZE && 
+        
+        // Check for macOS utun 4-byte header first
+        let (dst_mac, src_mac, ethertype, vlan_id, ip_offset) = if packet.len() >= 4 && 
+            packet[0] == 0x00 && packet[1] == 0x00 && packet[2] == 0x00 && packet[3] == 0x02 &&
+            packet.len() >= 4 + IP_HEADER_MIN_SIZE &&
+            (packet[4] & 0xF0) == 0x40 && (packet[4] & 0x0F) >= 5 {
+            // macOS utun raw IP packet (TUN mode) - 4-byte header + IP packet
+            // Use dummy MAC addresses for L2 matching (will match Layer2Match::Any)
+            (DUMMY_MAC.as_slice(), DUMMY_MAC.as_slice(), IPV4_ETHERTYPE, None, 4)
+        } else if packet.len() >= IP_HEADER_MIN_SIZE && 
             (packet[0] & 0xF0) == 0x40 && (packet[0] & 0x0F) >= 5 {
-            // Raw IP packet (TUN mode) - no Ethernet header
+            // Raw IP packet (TUN mode) - no Ethernet header, no utun header
             // Use dummy MAC addresses for L2 matching (will match Layer2Match::Any)
             (DUMMY_MAC.as_slice(), DUMMY_MAC.as_slice(), IPV4_ETHERTYPE, None, 0)
         } else if packet.len() >= ETHERNET_HEADER_SIZE {
@@ -638,7 +649,7 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
                 if let Some(first_seen) = self.check_fragment_tracking(src_ip, dst_ip, ip_id, protocol, fragment_offset) {
                     if !first_seen {
                         // Fragment received but first fragment (offset=0) not seen - drop it
-                        return Ok(MatchResult::Drop);
+                        return Ok(MatchResult::Drop(None)); // Fragment tracking drop, not a rule
                     }
                 }
             }
@@ -666,7 +677,7 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
         
         // Match against rules in order (single pass - fragment/connection tracking already done)
         // For rules that matched L2, we can skip L2 check in matches_rule
-        for rule in &self.rules {
+        for (rule_idx, rule) in self.rules.iter().enumerate() {
             // Quick L2 check first
             if !self.matches_l2(rule, src_mac, dst_mac, ethertype, vlan_id) {
                 continue;
@@ -690,15 +701,15 @@ impl<const N: usize, const C: usize, const F: usize> Firewall<N, C, F> {
                         }
                         MatchResult::Accept
                     }
-                    Action::Drop => MatchResult::Drop,
-                    Action::Reject => MatchResult::Reject,
+                    Action::Drop => MatchResult::Drop(Some(rule_idx)),
+                    Action::Reject => MatchResult::Reject(Some(rule_idx)),
                 };
                 return Ok(result);
             }
         }
         
         // DEFAULT DENY ALL: If no rule matches, deny the packet
-        Ok(MatchResult::Drop)
+        Ok(MatchResult::Drop(None))
     }
     
     /// Check if L2/VLAN matches (used for early filtering)

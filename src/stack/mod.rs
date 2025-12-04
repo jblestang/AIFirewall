@@ -42,17 +42,17 @@ impl<const N: usize, const C: usize, const F: usize> VirtualStack<N, C, F> {
                 self.rx_buffer.push_back(packet);
                 Ok(MatchResult::Accept)
             }
-            MatchResult::Drop => {
+            MatchResult::Drop(rule_idx) => {
                 // Packet dropped silently
-                Ok(MatchResult::Drop)
+                Ok(MatchResult::Drop(rule_idx))
             }
-            MatchResult::Reject => {
+            MatchResult::Reject(rule_idx) => {
                 // Packet rejected (could send ICMP error, but for now just drop)
-                Ok(MatchResult::Reject)
+                Ok(MatchResult::Reject(rule_idx))
             }
             MatchResult::NoMatch => {
                 // Default policy: drop if no match
-                Ok(MatchResult::Drop)
+                Ok(MatchResult::Drop(None))
             }
         }
     }
@@ -71,11 +71,11 @@ impl<const N: usize, const C: usize, const F: usize> VirtualStack<N, C, F> {
                 self.tx_buffer.push_back(packet);
                 Ok(MatchResult::Accept)
             }
-            MatchResult::Drop => {
-                Ok(MatchResult::Drop)
+            MatchResult::Drop(rule_idx) => {
+                Ok(MatchResult::Drop(rule_idx))
             }
-            MatchResult::Reject => {
-                Ok(MatchResult::Reject)
+            MatchResult::Reject(rule_idx) => {
+                Ok(MatchResult::Reject(rule_idx))
             }
             MatchResult::NoMatch => {
                 // Default policy: accept if no match (for outgoing)

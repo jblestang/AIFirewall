@@ -129,10 +129,10 @@ fn run_network_mode(args: &[String]) {
                         Ok(MatchResult::Accept) => {
                             println!("  ✓ Packet ACCEPTED by firewall");
                         }
-                        Ok(MatchResult::Drop) => {
+                        Ok(MatchResult::Drop(_)) => {
                             println!("  ✗ Packet DROPPED by firewall");
                         }
-                        Ok(MatchResult::Reject) => {
+                        Ok(MatchResult::Reject(_)) => {
                             println!("  ✗ Packet REJECTED by firewall");
                         }
                         Ok(MatchResult::NoMatch) => {
@@ -267,8 +267,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✓ Result: ACCEPT (PASS)"),
-        Ok(MatchResult::Drop) => println!("✗ Result: DROP (FAIL)"),
-        Ok(MatchResult::Reject) => println!("✗ Result: REJECT (FAIL)"),
+        Ok(MatchResult::Drop(_)) => println!("✗ Result: DROP (FAIL)"),
+        Ok(MatchResult::Reject(_)) => println!("✗ Result: REJECT (FAIL)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
@@ -287,8 +287,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✓ Result: ACCEPT (PASS)"),
-        Ok(MatchResult::Drop) => println!("✗ Result: DROP (FAIL)"),
-        Ok(MatchResult::Reject) => println!("✗ Result: REJECT (FAIL)"),
+        Ok(MatchResult::Drop(_)) => println!("✗ Result: DROP (FAIL)"),
+        Ok(MatchResult::Reject(_)) => println!("✗ Result: REJECT (FAIL)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
@@ -307,8 +307,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✗ Result: ACCEPT (FAIL)"),
-        Ok(MatchResult::Drop) => println!("✓ Result: DROP (PASS)"),
-        Ok(MatchResult::Reject) => println!("✓ Result: REJECT (PASS)"),
+        Ok(MatchResult::Drop(_)) => println!("✓ Result: DROP (PASS)"),
+        Ok(MatchResult::Reject(_)) => println!("✓ Result: REJECT (PASS)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
@@ -328,8 +328,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✗ Result: ACCEPT (FAIL)"),
-        Ok(MatchResult::Drop) => println!("✓ Result: DROP (PASS)"),
-        Ok(MatchResult::Reject) => println!("✓ Result: REJECT (PASS)"),
+        Ok(MatchResult::Drop(_)) => println!("✓ Result: DROP (PASS)"),
+        Ok(MatchResult::Reject(_)) => println!("✓ Result: REJECT (PASS)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
@@ -348,8 +348,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✓ Result: ACCEPT (PASS)"),
-        Ok(MatchResult::Drop) => println!("✗ Result: DROP (FAIL)"),
-        Ok(MatchResult::Reject) => println!("✗ Result: REJECT (FAIL)"),
+        Ok(MatchResult::Drop(_)) => println!("✗ Result: DROP (FAIL)"),
+        Ok(MatchResult::Reject(_)) => println!("✗ Result: REJECT (FAIL)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
@@ -369,8 +369,8 @@ fn run_test_mode() {
     );
     match result {
         Ok(MatchResult::Accept) => println!("✗ Result: ACCEPT (FAIL)"),
-        Ok(MatchResult::Drop) => println!("✓ Result: DROP (PASS)"),
-        Ok(MatchResult::Reject) => println!("✓ Result: REJECT (PASS)"),
+        Ok(MatchResult::Drop(_)) => println!("✓ Result: DROP (PASS)"),
+        Ok(MatchResult::Reject(_)) => println!("✓ Result: REJECT (PASS)"),
         Ok(MatchResult::NoMatch) => println!("✗ Result: NO MATCH (FAIL)"),
         Err(e) => println!("✗ Error: {:?}", e),
     }
